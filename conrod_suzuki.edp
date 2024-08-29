@@ -1,0 +1,110 @@
+load "msh3"
+load "gmsh"
+load "iovtk"
+
+// Geometric parameters
+real R = 0.0279;
+real L = 0.100;
+real l = R / L;
+// Angular velocity
+real omega = 9500 * (pi/30);
+
+// Material parameters
+string[int] materialName = ["St", "Al", "Ti"];
+real[int] materialE = [210e9, 70e9, 150e9];
+real[int] materialPoisson = [0.28, 0.33, 0.34];
+real[int] materialDensity = [7722, 2700, 4500];
+// Angle step in degrees
+int alphaStepDeg = 15;
+// Number of steps
+int alphaSteps = 195 / alphaStepDeg;
+
+// Mesh loading
+mesh3 Th = gmshload3("conrod_suzuki_si.msh");
+// Print avaliable labels
+int[int] labs = labels(Th);
+cout << "LABELS \n" << labs << endl;
+
+// Function space definition
+fespace Vh(Th, P1);
+// Displacement function
+Vh ux, uy, uz;
+// Test function
+Vh vx, vy, vz;
+
+// Macro, epsilon(ux,uy,uz)' * epsilon(vx,vy,vz) = epsilon(u) : epsilon(v)
+macro epsilon(ux,uy,uz) [ dx(ux), (dy(ux)+dx(uy))/2, (dz(ux)+dx(uz))/2, (dx(uy)+dy(ux))/2, dy(uy), (dz(uy)+dy(uz))/2, (dx(uz)+dz(ux))/2, (dy(uz)+dz(uy))/2, dz(uz) ] //
+
+// Macro, div(ux,uy,uz) = \nabla \cdot [ux,uy,uz]
+macro div(ux,uy,uz) ( dx(ux) + dy(uy) + dz(uz) ) //
+
+// Loop for all materials
+for (int i = 0; i < materialName.n; i++) {
+    string symbol = materialName[i];
+    real E = materialE[i];
+    real nu = materialPoisson[i];
+    real rho = materialDensity[i];
+
+    // Loop for all angles
+    for (int j = 0; j < alphaSteps; j++) {
+        string fileName = "suzuki/sigma_von_Mises_" + symbol + "_" + alphaStepDeg + "_" + j + ".vtu";
+        real alpha = j*alphaStepDeg * (pi/180);
+        cout << "Compute " << fileName << " ..." << endl;
+
+        // Lame's parameters
+        real mu = E/(2*(1+nu));
+        real lambda = E*nu/((1+nu)*(1-2*nu));
+
+        // Mass force (density * acceleration)
+        func fx = rho*omega*omega*R*(l*cos(2*alpha) - (1/L)*x*l*cos(2*alpha) + (1/L)*y*sin(alpha) + cos(alpha));
+        func fy = rho*omega*omega*R*(-(1/L)*y*l*cos(2*alpha) - (1/L)*x*sin(alpha));
+        func fz = 0;
+
+        // Equilibrium state (weak formulation)
+        solve ConRod3D([ux,uy,uz], [vx,vy,vz])
+            = int3d(Th)(
+                lambda * div(ux, uy, uz) * div(vx, vy, vz)
+                + 2.*mu * ( epsilon(ux, uy, uz)' * epsilon(vx, vy, vz) )
+            )
+            - int3d(Th)(
+                [fx,fy,fz]' * [vx,vy,vz]
+            )
+            + on(212, ux=0, uy=0, uz=0)
+            + on(213, ux=0, uy=0, uz=0);
+
+        // Strain tensor elements
+        Vh epsxx, epsyy, epszz, epsxy, epsxz, epsyz;
+
+        // Strain computation based on displacement
+        epsxx = dx(ux);
+        epsyy = dy(uy);
+        epszz = dz(uz);
+        epsxy = 0.5 * (dx(uy) + dy(ux));
+        epsxz = 0.5 * (dx(uz) + dz(ux));
+        epsyz = 0.5 * (dy(uz) + dz(uy));
+
+        // Stress tensor elements
+        Vh sigmaxx, sigmayy, sigmazz, sigmaxy, sigmaxz, sigmayz;
+
+        // Stress computation based on strain
+        sigmaxx = lambda * (epsxx + epsyy + epszz) + 2 * mu * epsxx;
+        sigmayy = lambda * (epsxx + epsyy + epszz) + 2 * mu * epsyy;
+        sigmazz = lambda * (epsxx + epsyy + epszz) + 2 * mu * epszz;
+        sigmaxy = 2 * mu * epsxy;
+        sigmaxz = 2 * mu * epsxz;
+        sigmayz = 2 * mu * epsyz;
+
+        // von Mises stress function
+        Vh sigmavM;
+
+        // von Mises stress computation
+        sigmavM = sqrt(
+            0.5 * ((sigmaxx - sigmayy)^2 + (sigmayy - sigmazz)^2 + (sigmazz - sigmaxx)^2)
+            + 3 * (sigmaxy^2 + sigmaxz^2 + sigmayz^2)
+        );
+
+        // Result export to VTK file (ParaView format)
+        int[int] Order = [1];
+        savevtk(fileName, Th, sigmavM, dataname="von_Mises_stress_[Pa]", order=Order);
+    }
+}
