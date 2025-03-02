@@ -4,7 +4,7 @@ load "iovtk"
 
 // Geometric parameters
 real R = 0.075;
-real L = 0.100;
+real L = 0.275;
 real l = R / L;
 // Angular velocity
 real omega = 2100 * (pi/30);
